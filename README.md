@@ -16,6 +16,17 @@
                 └──────────────────────────────────────────────┘
 ```
 
+## 安装
+
+在 `ComfyUI/custom_nodes/` 目录下：
+
+```bash
+git clone https://github.com/Ayin1412/ComfyUI-H3-PromptWriter.git
+```
+
+重启 ComfyUI 即可。依赖（`requests`、`pillow`、`numpy`）ComfyUI 自带环境都有，
+一般不用装；真缺了就 `pip install -r requirements.txt`。
+
 ## 怎么用
 
 1. 点 **🔑 API 设置** 填一次接口地址、模型和 Key。
@@ -94,19 +105,6 @@
   「载入到节点」会把正文和当初的需求一起放回节点。
 
 内容完全一样的记录只更新时间戳，不会重复堆积。
-
-## 依赖
-
-`requests`、`pillow`、`numpy` —— ComfyUI 自带环境里都有，一般不用额外装。
-
-## 安装
-
-```bash
-git clone https://github.com/siteoj/ComfyUI-H3-PromptWriter.git
-```
-
-克隆到 `ComfyUI/custom_nodes/` 下，重启 ComfyUI 即可。依赖 ComfyUI 自带环境都有，
-一般不用装；真缺了就 `pip install -r requirements.txt`。
 
 ## 许可
 

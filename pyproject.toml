@@ -7,9 +7,9 @@ requires-python = ">=3.10"
 dependencies = ["requests", "pillow", "numpy"]
 
 [project.urls]
-Repository = "https://github.com/siteoj/ComfyUI-H3-PromptWriter"
+Repository = "https://github.com/Ayin1412/ComfyUI-H3-PromptWriter"
 
 [tool.comfy]
 DisplayName = "H3 视频提示词撰写 (API)"
-PublisherId = "siteoj"
-Repository = "https://github.com/siteoj/ComfyUI-H3-PromptWriter"
+PublisherId = "Ayin1412"
+Repository = "https://github.com/Ayin1412/ComfyUI-H3-PromptWriter"
