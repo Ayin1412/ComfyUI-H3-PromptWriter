@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# 本地数据：API 配置和提示词库正常存在 ComfyUI 的 user 目录下，
+# 但脱离 ComfyUI 单跑时会退回到本目录，别误提交。
+config.json
+prompts.json
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
