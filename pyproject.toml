@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-h3-prompt-writer"
 description = "调用 OpenAI 兼容接口，按 MiniMax H3 官方 h3-prompt-writing 规范把想法和参考图写成视频提示词；支持 T2VA/I2VA/FL2VA/L2VA/Ref2VA 五种模式、图片输入按模式自动增删、左右两栏编辑器、点按钮单独生成（运行工作流时不调 API）、可存进提示词库。"
-version = "2.0.0"
+version = "2.1.0"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["requests", "pillow", "numpy"]

@@ -9,7 +9,7 @@ import time
 from aiohttp import web
 from server import PromptServer
 
-from . import config, library, openai_client
+from . import config, h3_guide, images, library, modes, nodes, openai_client
 
 routes = PromptServer.instance.routes
 
@@ -100,6 +100,65 @@ async def fetch_models(request):
     except Exception as e:
         return web.json_response({"error": str(e)}, status=400)
     return web.json_response({"items": items, "url": openai_client.models_url(base_url)})
+
+
+def _write_prompt(mode, query, duration, refs):
+    """在工作线程里干活：读图 → 拼 system prompt → 调接口。"""
+    cfg = config.settings()
+    if not cfg["api_key"]:
+        raise ValueError("没有找到 API Key。点节点上的「API 设置」按钮填一次即可，"
+                         "或者设置环境变量 OPENAI_API_KEY。")
+
+    code = modes.mode_code(mode)
+    urls = images.refs_to_data_urls(refs, max_side=cfg["max_image_side"])
+    nodes.check_image_count(code, len(urls))
+
+    system = h3_guide.build_system_prompt(code, len(urls), duration, cfg["extra_requirements"])
+    user = openai_client.build_user_message(
+        "Video request from the user (may be written in Chinese; the rewrite must still be "
+        f"in English):\n{query.strip()}",
+        urls,
+        detail=cfg["image_detail"],
+    )
+    raw, _ = openai_client.complete(
+        cfg["base_url"], cfg["api_key"], cfg["model"],
+        [{"role": "system", "content": system}, user],
+        temperature=cfg["temperature"], max_tokens=cfg["max_tokens"],
+        timeout=cfg["timeout"], retries=cfg["retries"],
+    )
+    text = nodes.clean_prompt(raw)
+    if not text:
+        raise RuntimeError("模型返回内容为空，换个模型或在设置里调高 max_tokens 再试。")
+    return text
+
+
+@routes.post("/h3_prompt/generate")
+async def generate(request):
+    """写提示词。
+
+    刻意不走 /prompt：这条接口跑在 aiohttp 自己的线程池上，和 ComfyUI 的执行队列没关系，
+    所以正在出视频的时候点「生成提示词」也能立刻响应，不用排队，也不会插队打断出图。
+    图片由前端以 {filename, subfolder, type} 的形式给过来，后端直接从磁盘读。
+    """
+    data = await _json_body(request)
+    query = str(data.get("query") or "")
+    if not query.strip():
+        return web.json_response({"error": "请先写清楚你想要什么样的视频"}, status=400)
+
+    try:
+        duration = float(data.get("duration") or 6.0)
+    except (TypeError, ValueError):
+        duration = 6.0
+
+    refs = data.get("images")
+    refs = refs if isinstance(refs, list) else []
+
+    try:
+        text = await asyncio.to_thread(
+            _write_prompt, data.get("mode"), query, duration, refs)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+    return web.json_response({"prompt": text})
 
 
 @routes.post("/h3_prompt/test")

@@ -3,9 +3,13 @@
 节点上只留 4 样东西：模式、时长、左边的 query 框、右边的 prompt 框。
 所有 API 参数都在「🔑 API 设置」面板里，见 config.py。
 
-写提示词是点节点上的「✍️ 生成提示词」按钮触发的：前端把整张图连同
-partial_execution_targets 一起提交，ComfyUI 只跑这个节点和它上游的图片节点，
-此时 action=generate，节点才会调用 API。
+写提示词是点节点上的「✍️ 生成提示词」按钮触发的，而且**不走 ComfyUI 的执行队列**：
+前端把图片解析成 {filename, subfolder, type} 交给 /h3_prompt/generate，那条接口在
+aiohttp 的线程池上直接干活，所以正在出视频的时候也能立刻用，不排队也不打断出图。
+见 server_routes.py。
+
+只有前端解析不出图片时（上游是没跑过的中间节点），才会退回到排队那条路：提交整张图 +
+partial_execution_targets，此时 action=generate，下面的 write() 才会调用 API。
 
 正常运行整个工作流时 action=passthrough，节点不碰 API，直接把右边框里的内容输出。
 """
@@ -40,7 +44,7 @@ def _collect_images(kwargs, max_side):
     return urls
 
 
-def _check_count(code, n_images):
+def check_image_count(code, n_images):
     spec = MODE_SPEC[code]
     want = spec["images"]
     if want is None:  # Ref2VA 不限张数，但至少要有一张
@@ -55,7 +59,7 @@ def _check_count(code, n_images):
         )
 
 
-def _clean(text):
+def clean_prompt(text):
     text = (text or "").strip()
     m = _FENCE_RE.match(text)
     return m.group(1).strip() if m else text
@@ -110,7 +114,7 @@ class H3PromptWriter:
 
     def write(self, mode, duration_seconds, query, result, action="passthrough", **kwargs):
         if action != GENERATE:
-            text = _clean(result)
+            text = clean_prompt(result)
             if not text:
                 print("[H3PromptWriter] 提示词框是空的，输出了空字符串。"
                       "先点节点上的「生成提示词」按钮，或者直接往右边的框里粘一段。")
@@ -126,7 +130,7 @@ class H3PromptWriter:
                              "或者设置环境变量 OPENAI_API_KEY。")
 
         image_urls = _collect_images(kwargs, cfg["max_image_side"])
-        _check_count(code, len(image_urls))
+        check_image_count(code, len(image_urls))
 
         system = build_system_prompt(code, len(image_urls), duration_seconds,
                                      cfg["extra_requirements"])
@@ -143,7 +147,7 @@ class H3PromptWriter:
             temperature=cfg["temperature"], max_tokens=cfg["max_tokens"],
             timeout=cfg["timeout"], retries=cfg["retries"],
         )
-        text = _clean(raw)
+        text = clean_prompt(raw)
         if not text:
             raise RuntimeError("模型返回内容为空，换个模型或在设置里调高 max_tokens 再试。")
 

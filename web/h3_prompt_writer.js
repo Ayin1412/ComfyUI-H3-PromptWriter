@@ -63,6 +63,7 @@ const getConfig = () => apiCall("config");
 const setConfig = (patch) => apiCall("config", patch);
 const fetchModels = (conn) => apiCall("models", conn).then((d) => d.items || []);
 const testConnection = (conn) => apiCall("test", conn);
+const generateDirect = (payload) => apiCall("generate", payload).then((d) => d.prompt || "");
 
 /* ------------------------------------------------------------ 节点小工具 */
 
@@ -730,6 +731,117 @@ function openLibrary(node) {
     reload().then(() => searchEl.focus());
 }
 
+/* ---------------------------------------------------- 图片引用（不排队用） */
+
+const IMG_EXT_RE = /\.(png|jpe?g|webp|bmp|gif|tiff?)(\s*\[|$)/i;
+
+/** 从 /view?filename=…&subfolder=…&type=… 这样的地址里抠出引用。 */
+function refFromUrl(src) {
+    try {
+        const q = new URL(src, window.location.origin).searchParams;
+        const filename = q.get("filename");
+        if (!filename) return null;
+        return { filename, subfolder: q.get("subfolder") || "", type: q.get("type") || "output" };
+    } catch (e) {
+        return null;
+    }
+}
+
+/** 从 /history 里取各节点最近一次跑出来的图片：节点 id → [{filename, subfolder, type}]。
+ *
+ * 新前端（1.4x）不再把执行结果挂在节点对象上，所以要问后端。只有输出节点会在 history
+ * 里留下 outputs，PreviewBridge 这类「既是输出节点又有输出槽」的节点因此也能直接用。
+ */
+async function recentOutputImages() {
+    const map = {};
+    try {
+        const r = await api.fetchApi("/history?max_items=64");
+        const hist = await r.json();
+        // 对象键序即插入序，后面的更新，正好让最近一次执行覆盖旧的
+        for (const entry of Object.values(hist || {})) {
+            const graph = entry?.prompt?.[2] || {};
+            for (const [nodeId, out] of Object.entries(entry?.outputs || {})) {
+                const imgs = (out?.images || []).filter((i) => i && i.filename);
+                if (!imgs.length) continue;
+                map[String(nodeId)] = {
+                    // 节点 id 会跨工作流复用，光看 id 会张冠李戴，把类型一起记下来校验
+                    classType: graph[nodeId]?.class_type,
+                    refs: imgs.map((i) => ({
+                        filename: i.filename, subfolder: i.subfolder || "", type: i.type || "temp",
+                    })),
+                };
+            }
+        }
+    } catch (e) {
+        console.warn("[H3] 读 /history 失败，只能靠文件名 widget 找图", e);
+    }
+    return map;
+}
+
+/** 某个节点身上能直接拿到的图片引用。 */
+function refsOfNode(node, history) {
+    // 1. 老前端把预览图挂在节点上
+    const imgs = node?.imgs || node?.images;
+    if (Array.isArray(imgs) && imgs.length) {
+        const refs = imgs.map((im) => refFromUrl(im?.src || im?.url || im)).filter(Boolean);
+        if (refs.length) return refs;
+    }
+    // 2. LoadImage 这类的文件名 widget —— 它才是这个节点接下来真正会读的文件
+    //    （"example.png [input]" 的标注后端会自己处理）
+    for (const w of node?.widgets || []) {
+        const v = w?.value;
+        if (typeof v === "string" && IMG_EXT_RE.test(v)) {
+            return [{ filename: v, subfolder: "", type: "input" }];
+        }
+    }
+    // 3. 兜底：这个节点最近一次执行留下的输出，类型对得上才认
+    const hit = history?.[String(node?.id)];
+    if (hit?.refs?.length && hit.classType === node?.type) return hit.refs;
+    return null;
+}
+
+/** 顺着 IMAGE 连线往上找最近一个能拿到图的节点。找不到返回 null。 */
+function resolveUpstreamRefs(node, history, depth = 0) {
+    if (!node || depth > 8) return null;
+    const own = refsOfNode(node, history);
+    if (own) return { refs: own, from: node, hops: depth };
+
+    for (const inp of node.inputs || []) {
+        if (inp.type !== "IMAGE" || inp.link == null) continue;
+        const link = app.graph.links[inp.link];
+        const up = link && app.graph.getNodeById(link.origin_id);
+        const found = resolveUpstreamRefs(up, history, depth + 1);
+        if (found) return found;
+    }
+    return null;
+}
+
+/** 本节点所有 image_N 输入 → 图片引用列表。任何一个解析不出就返回 refs: null。 */
+async function collectImageRefs(node) {
+    const slots = (node.inputs || [])
+        .map((inp) => ({ inp, m: IMAGE_RE.exec(inp.name) }))
+        .filter((s) => s.m && s.inp.link != null)
+        .sort((a, b) => parseInt(a.m[1], 10) - parseInt(b.m[1], 10));
+
+    if (!slots.length) return { refs: [], notes: [] }; // T2VA
+
+    const history = await recentOutputImages();
+    const refs = [];
+    const notes = [];
+    for (const s of slots) {
+        const link = app.graph.links[s.inp.link];
+        const src = link && app.graph.getNodeById(link.origin_id);
+        const found = resolveUpstreamRefs(src, history);
+        const name = s.inp.label || s.inp.name;
+        if (!found) {
+            return { refs: null, why: `${name} 上游的「${src?.title || "?"}」还没有落到磁盘的图` };
+        }
+        if (found.hops > 0) notes.push(`${name} 取的是上游「${found.from.title}」的图`);
+        refs.push(...found.refs);
+    }
+    return { refs, notes };
+}
+
 /* -------------------------------------------------------- 生成（单节点跑） */
 
 /** 轮询 /history，等这次任务跑完，拿到写好的提示词或者错误信息。 */
@@ -775,47 +887,67 @@ async function generate(node) {
 
     setBusy(node, true);
     try {
-        // 提交整张图，但用 partial_execution_targets 限定只跑这个节点和它上游的图片节点，
-        // 不会连采样器一起跑。action=generate 让后端这一次真的去调 API。
-        const full = await app.graphToPrompt();
-        const prompt = full.output;
-        const id = String(node.id);
-        if (!prompt[id]) throw new Error("节点不在要执行的图里（是不是被 Bypass / Mute 了？）");
-        prompt[id].inputs.action = "generate";
-
-        const r = await api.fetchApi("/prompt", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                prompt,
-                client_id: api.clientId,
-                partial_execution_targets: [id],
-                extra_data: { extra_pnginfo: { workflow: full.workflow } },
-            }),
-        });
-        if (!r.ok) {
-            let detail = "";
-            try {
-                const j = await r.json();
-                detail = j?.error?.message || j?.error?.type || "";
-                console.error("[H3] /prompt 被拒绝", j);
-            } catch (e) {
-                /* 响应体不是 json */
-            }
-            throw new Error(detail || `提交失败 (${r.status})`);
+        // 首选：完全不碰执行队列。前端把图片解析成 {filename, subfolder, type}，
+        // 交给 /h3_prompt/generate 直接干活——正在出视频时也能立刻用。
+        const { refs, notes, why } = await collectImageRefs(node);
+        if (refs) {
+            if (notes.length) toast(notes.join("；"), "info");
+            const text = await generateDirect({
+                mode: widgetValue(node, "mode"),
+                query: widgetValue(node, "query"),
+                duration: Number(widgetValue(node, "duration_seconds")) || 6,
+                images: refs,
+            });
+            setText(node, "result", text);
+            return;
         }
-
-        const { prompt_id } = await r.json();
-        const res = await waitForResult(prompt_id, id);
-        if (res.error) toast(res.error, "error");
-        else if (res.text) setText(node, "result", res.text); // onExecuted 一般已经填过了，这里兜底
-        else toast("没拿到结果，看看控制台", "warn");
+        // 兜底：图还只存在于显存里，只能让 ComfyUI 把它算出来，这一次要排队
+        toast(`${why}，这次改走执行队列（会排在当前任务后面）。想每次都免排队，接个 LoadImage。`,
+              "warn");
+        await generateViaQueue(node);
     } catch (e) {
         console.error("[H3] 生成失败", e);
         toast(`生成失败：${e.message}`, "error");
     } finally {
         setBusy(node, false);
     }
+}
+
+/** 兜底路径：提交整张图，但用 partial_execution_targets 限定只跑本节点和上游图片节点。 */
+async function generateViaQueue(node) {
+    const full = await app.graphToPrompt();
+    const prompt = full.output;
+    const id = String(node.id);
+    if (!prompt[id]) throw new Error("节点不在要执行的图里（是不是被 Bypass / Mute 了？）");
+    prompt[id].inputs.action = "generate";
+
+    const r = await api.fetchApi("/prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            prompt,
+            client_id: api.clientId,
+            partial_execution_targets: [id],
+            extra_data: { extra_pnginfo: { workflow: full.workflow } },
+        }),
+    });
+    if (!r.ok) {
+        let detail = "";
+        try {
+            const j = await r.json();
+            detail = j?.error?.message || j?.error?.type || "";
+            console.error("[H3] /prompt 被拒绝", j);
+        } catch (e) {
+            /* 响应体不是 json */
+        }
+        throw new Error(detail || `提交失败 (${r.status})`);
+    }
+
+    const { prompt_id } = await r.json();
+    const res = await waitForResult(prompt_id, id);
+    if (res.error) toast(res.error, "error");
+    else if (res.text) setText(node, "result", res.text); // onExecuted 一般已经填过了，这里兜底
+    else toast("没拿到结果，看看控制台", "warn");
 }
 
 /* -------------------------------------------------------- 两栏编辑器 widget */

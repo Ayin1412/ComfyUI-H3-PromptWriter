@@ -39,14 +39,32 @@ missing, run `pip install -r requirements.txt`.
    appear, disappear and rename themselves to match the mode.
 3. Write your request in the left box, then click **✍️ 生成提示词**.
 
-   Only this node and its upstream image nodes run (via ComfyUI's
-   `partial_execution_targets`) — **your sampler is not executed**. The written prompt
-   lands in the right box, where you can edit it by hand.
+   This **does not go through ComfyUI's execution queue**. The frontend resolves your
+   reference images to files on disk and hands them to a dedicated endpoint that runs on
+   the web server's thread pool, so you can click it *while a video is rendering* — no
+   waiting in line, and the running job is not interrupted. The written prompt lands in
+   the right box, where you can edit it by hand.
 4. When you later run the whole workflow, **the node never touches the API**: it just
    emits whatever is in the right box as `prompt`.
 
 So *you* decide when an API call happens. Re-running the workflow neither overwrites
 your hand edits nor burns tokens again.
+
+### Where the images come from
+
+To stay off the queue, the button needs images that already exist as files. It looks, in
+order, at:
+
+1. the preview attached to the upstream node (older ComfyUI frontends);
+2. a filename widget on it — this covers `LoadImage` and friends;
+3. that node's most recent output in `/history`, but only when the node type still
+   matches, since node ids get reused across workflows.
+
+If the immediate source has none of those, the search walks further upstream and tells
+you which node it borrowed the image from. If the whole chain comes up empty — the image
+only exists in VRAM, e.g. a fresh `VAEDecode` — it falls back to the queued path
+(`partial_execution_targets`, so still only this node and its image ancestors run) and
+warns you. Wiring a `LoadImage` in keeps it queue-free every time.
 
 ## What it actually sends
 
