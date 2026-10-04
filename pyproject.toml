@@ -1,6 +1,6 @@
-﻿[project]
+[project]
 name = "comfyui-h3-prompt-writer"
-description = "璋冪敤 OpenAI 鍏煎鎺ュ彛锛屾寜 MiniMax H3 瀹樻柟 h3-prompt-writing 瑙勮寖鎶婃兂娉曞拰鍙傝€冨浘鍐欐垚瑙嗛鎻愮ず璇嶏紱鏀寔 T2VA/I2VA/FL2VA/L2VA/Ref2VA 浜旂妯″紡銆佸浘鐗囪緭鍏ユ寜妯″紡鑷姩澧炲垹銆佸乏鍙充袱鏍忕紪杈戝櫒銆佺偣鎸夐挳鍗曠嫭鐢熸垚锛堣繍琛屽伐浣滄祦鏃朵笉璋?API锛夈€佸彲瀛樿繘鎻愮ず璇嶅簱銆?
+description = "调用 OpenAI 兼容接口，按 MiniMax H3 官方 h3-prompt-writing 规范把想法和参考图写成视频提示词；支持 T2VA/I2VA/FL2VA/L2VA/Ref2VA 五种模式、图片输入按模式自动增删、左右两栏编辑器、点按钮单独生成（运行工作流时不调 API）、可存进提示词库。"
 version = "2.1.1"
 license = "MIT"
 requires-python = ">=3.10"
@@ -10,6 +10,6 @@ dependencies = ["requests", "pillow", "numpy"]
 Repository = "https://github.com/Ayin1412/ComfyUI-H3-PromptWriter"
 
 [tool.comfy]
-DisplayName = "H3 瑙嗛鎻愮ず璇嶆挵鍐?(API)"
+DisplayName = "H3 视频提示词撰写 (API)"
 PublisherId = "Ayin1412"
 Repository = "https://github.com/Ayin1412/ComfyUI-H3-PromptWriter"
