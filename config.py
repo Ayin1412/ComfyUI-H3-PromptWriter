@@ -25,7 +25,7 @@ _SCHEMA = {
     "model": ("gpt-4o", str, None, None),
     "temperature": (0.7, float, 0.0, 2.0),
     "max_tokens": (4096, int, 256, 32768),
-    "timeout": (120, int, 10, 900),
+    "timeout": (300, int, 10, 1800),
     "retries": (2, int, 0, 5),
     "max_image_side": (1024, int, 256, 2048),
     "image_detail": ("auto", str, None, None),

@@ -9,8 +9,15 @@ import json
 import time
 
 import requests
+from urllib3.exceptions import NewConnectionError
 
-RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+# 重试的原则：只在**确定服务端没处理这次请求**时才重试，否则就是花钱买重复结果。
+#   429 限流、503 过载 —— 服务端明确拒绝了，没开始生成
+#   连不上（DNS 失败、拒绝连接、连接超时）—— 请求根本没发出去
+# 读超时、500/502/504 一律不重试：请求已经到了服务端（中转站的 504 往往是它自己等不及了，
+# 上游模型还在跑），重发一次就多计费一次。
+RETRY_STATUS = {429, 503}
+_MAX_RETRY_AFTER = 30.0
 
 
 _SUFFIX = "/chat/completions"
@@ -127,7 +134,7 @@ def _error_text(resp):
 
 
 def complete(base_url, api_key, model, messages, temperature=0.7, max_tokens=4096,
-             timeout=120, retries=2, extra_body=None):
+             timeout=300, retries=2, extra_body=None):
     """发一次请求，返回 (正文, 原始 JSON)。失败会重试可恢复的错误。"""
     url = chat_completions_url(base_url)
     headers = _headers(api_key)
@@ -145,18 +152,48 @@ def complete(base_url, api_key, model, messages, temperature=0.7, max_tokens=409
 
     last_err = None
     for attempt in range(int(retries) + 1):
+        wait = 1.5 * (attempt + 1)
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=float(timeout))
+        except requests.exceptions.ReadTimeout:
+            raise RuntimeError(
+                f"等了 {float(timeout):.0f} 秒模型还没回完。请求已经到了服务端，可能还在生成并照常计费，"
+                "所以没有自动重试。推理型模型比较慢，去「API 设置」里把超时调大再试。"
+            )
         except requests.RequestException as e:
-            last_err = f"请求 {url} 失败：{e}"
+            if not _never_sent(e):
+                raise RuntimeError(f"请求 {url} 中途断开：{e}（可能已被处理，没有自动重试）")
+            last_err = f"连不上 {url}：{e}"
         else:
             if resp.status_code == 200:
-                return _extract_text(resp.json()), resp.json()
+                data = resp.json()
+                return _extract_text(data), data
             last_err = f"接口返回 {resp.status_code}：{_error_text(resp)}"
             if resp.status_code not in RETRY_STATUS:
+                if resp.status_code in (500, 502, 504):
+                    last_err += "（请求可能已被处理并计费，没有自动重试）"
                 break
+            wait = max(wait, _retry_after(resp))
 
         if attempt < int(retries):
-            time.sleep(1.5 * (attempt + 1))
+            time.sleep(wait)
 
     raise RuntimeError(last_err or "请求失败")
+
+
+def _never_sent(err):
+    """这个异常是不是发生在请求发出去之前（连不上），只有这种才能放心重试。"""
+    if isinstance(err, requests.exceptions.ConnectTimeout):
+        return True
+    if isinstance(err, requests.exceptions.ConnectionError):
+        reason = getattr(err.args[0], "reason", None) if err.args else None
+        return isinstance(reason, NewConnectionError)  # 含 DNS 解析失败、拒绝连接
+    return False
+
+
+def _retry_after(resp):
+    """尊重 429/503 带回来的 Retry-After（秒），封顶 30 秒。"""
+    try:
+        return min(_MAX_RETRY_AFTER, max(0.0, float(resp.headers.get("Retry-After", 0))))
+    except (TypeError, ValueError):
+        return 0.0
